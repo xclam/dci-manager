@@ -114,7 +114,7 @@ st.sidebar.info(
 
 if current_role == "Administrateur":
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🛡️️ Admin Panel")
+    st.sidebar.subheader("🛡 Admin Panel")
     pending_count = len([d for d in st.session_state.dcis if d["statut"] == "SUBMITTED"])
     access_count = len([da for da in st.session_state.demandes_acces if da["statut"] == "EN ATTENTE"])
     st.sidebar.write(f"📥 Validations DCI : **{pending_count}**")
@@ -240,12 +240,14 @@ elif st.session_state.current_page == "create_dci":
             code_flux = st.text_input("Code flux métier *", placeholder="Ex: FLX_VENTES_MAGASIN")
             partenaire_source = st.text_input("Partenaire / SI source *", value=selected_user)
             
-            # Choix conditionnel du format selon le protocole
+            # Choix du protocole
             protocole = st.selectbox("Protocole d'échange *", ["sFTP", "Kafka"])
+            
+            # Application de la règle : Kafka -> json/proto/xml | sFTP -> csv
             if protocole == "Kafka":
-                format_flux = st.selectbox("Format *", ["JSON", "Proto", "XML"])
+                format_flux = st.selectbox("Format *", ["json", "proto", "xml"])
             else:
-                format_flux = st.selectbox("Format *", ["CSV"])
+                format_flux = st.selectbox("Format *", ["csv"])
                 
         with col2:
             desc_fonc = st.text_area("Description fonctionnelle *", placeholder="Description métier courte...")
@@ -253,7 +255,7 @@ elif st.session_state.current_page == "create_dci":
 
         commentaires = st.text_area("Commentaires libres", "")
 
-        # Paramètres Kafka
+        # Paramètres Kafka (affiché si protocole == Kafka)
         kafka_params = {}
         if protocole == "Kafka":
             st.subheader("2. Paramètres Kafka")
