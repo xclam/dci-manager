@@ -76,6 +76,7 @@ SEED_DCI = {
     "protocole": "sFTP",
     "format": "csv",
     "encodage": "UTF-8",
+    "contient_sei": False,
     "commentaires": "Flux critique pour les habilitations",
     "sftp_params": {
         "code_choree": "CHOR_HR",
@@ -220,7 +221,7 @@ def flatten(d: dict) -> dict:
             "Description": d.get("description")}
     for section, label in (("sftp_params", "sFTP"), ("kafka_params", "Kafka"), ("sla", "SLA")):
         for key, value in (d.get(section) or {}).items():
-            if key != "schema_content":  # Ne pas aplatir le contenu binaire/texte brut du schéma dans le diff standard
+            if key != "schema_content":
                 flat[f"{label} › {key}"] = value
     for i, om in enumerate(d.get("oms") or [], 1):
         for key in OM_KEYS:
@@ -237,7 +238,6 @@ def diff_rows(new: dict, old: dict) -> pd.DataFrame:
 
 
 def compare_sftp_headers(new_om: dict, old_om: dict) -> dict:
-    """Compare les en-têtes ou colonnes définies entre deux versions d'un OM sFTP."""
     old_cols = [c.strip().upper() for c in old_om.get("colonnes_header", "").split(";") if c.strip()]
     new_cols = [c.strip().upper() for c in new_om.get("colonnes_header", "").split(";") if c.strip()]
     
@@ -247,7 +247,6 @@ def compare_sftp_headers(new_om: dict, old_om: dict) -> dict:
 
 
 def compare_kafka_schemas(new_schema: str, old_schema: str) -> dict:
-    """Compare sommairement les lignes/propriétés d'un schéma Kafka entre deux versions."""
     old_lines = {l.strip() for l in old_schema.splitlines() if l.strip()}
     new_lines = {l.strip() for l in new_schema.splitlines() if l.strip()}
     
@@ -385,7 +384,7 @@ def flux_row(d: dict) -> None:
               on_click=go, args=("detail_dci", d["id"]), width="stretch")
     with c2:
         st.write(d["description"])
-        st.caption(f"Protocole : `{d['protocole']}`")
+        st.caption(f"Protocole : `{d['protocole']}`" + (" | 🔒 Contient des SEI" if d.get("contient_sei") else ""))
         st.markdown(badge(d["statut"]))
     with c3:
         access_button(d, key=f"acc_{d['id']}")
@@ -508,6 +507,8 @@ def page_form() -> None:
         description = st.text_area("Description fonctionnelle *", value=b.get("description", ""),
                                    key="f_desc", placeholder="Description métier courte...")
         encodage = st.selectbox("Encodage *", ["UTF-8"], key="f_enc")
+        contient_sei = st.checkbox("Ce flux contient des SEI", value=b.get("contient_sei", False), key="f_contient_sei")
+
     commentaires = st.text_area("Commentaires libres", value=b.get("commentaires", ""), key="f_comm")
 
     kafka_params: dict = {}
@@ -521,7 +522,6 @@ def page_form() -> None:
         for i, (key, label) in enumerate(KAFKA_FIELDS.items()):
             kafka_params[key] = cols[i % 2].text_input(f"{label} *", value=kafka0.get(key, ""), key=f"f_k_{key}")
         
-        # Schéma de message sous forme de pièce jointe (fichier)
         schema_file = st.file_uploader(
             "Schéma de message (pièce jointe) *",
             type=["json", "proto", "avsc", "xml", "txt"],
@@ -560,7 +560,7 @@ def page_form() -> None:
             enc = ["aucun", "GPG", "PGP"]
             sftp_params["chiffrement"] = st.selectbox("Chiffrement", enc, key="f_s_enc", index=pick(enc, sftp0.get("chiffrement")))
 
-        # --- 3. Objets métiers (sFTP uniquement avec gestion d'en-tête et liste des colonnes)
+        # --- 3. Objets métiers
         st.subheader("3. Objets Métiers (OM) & Définition CSV")
         n_om = int(st.number_input("Nombre d'Objets Métiers", min_value=1, max_value=5,
                                    value=max(1, len(old_oms)), key="f_n_om"))
@@ -587,7 +587,6 @@ def page_form() -> None:
                 horaires = st.text_input(f"Horaires #{i + 1}", value=old.get("horaires", "02:00"), key=f"f_om_hor_{i}")
                 jdd = st.file_uploader(f"JDD (CSV) pour {nom or 'OM'}", type=["csv"], key=f"f_om_jdd_{i}")
 
-            # Option En-tête + Liste des colonnes (le champ d'absence d'en-tête est supprimé)
             h_col1, h_col2 = st.columns(2)
             with h_col1:
                 header_present = st.selectbox(
@@ -636,7 +635,6 @@ def page_form() -> None:
     desc_modif = st.text_input("Description des changements", key="f_modif",
                                value={"evolve": "Évolution du flux", "edit": b.get("desc_modif", "")}.get(mode, "Création initiale du flux"))
 
-    # --- Actions
     b1, b2 = st.columns(2)
     draft = b1.button("💾 Enregistrer en brouillon", width="stretch")
     final = b2.button("🚀 Soumettre le DCI", type="primary", width="stretch")
@@ -646,7 +644,7 @@ def page_form() -> None:
     payload = {
         "code_flux": base["code_flux"] if base else code_flux,
         "description": description, "partenaire": partenaire, "protocole": protocole,
-        "format": format_flux, "encodage": encodage, "commentaires": commentaires,
+        "format": format_flux, "encodage": encodage, "contient_sei": contient_sei, "commentaires": commentaires,
         "kafka_params": kafka_params, "sftp_params": sftp_params, "oms": oms,
         "sla": {"criticite": criticite, "impact": impact, "sla_metier": sla_metier,
                 "canal": canal, "penalite": penalite, "commentaires": sla_comm},
@@ -688,22 +686,35 @@ def page_detail() -> None:
 
     st.title(f"Détail du flux : {d['code_flux']}")
     st.markdown(badge(d["statut"]))
-    info = {
-        "Version": fmt_version(d["version"]), "Partenaire / SI": d["partenaire"],
-        "Protocole": d["protocole"], "Format": d["format"], "Encodage": d["encodage"],
-        "Auteur / Date": f"{d['auteur']} ({d['date_soumission']})",
-        "Dernière modif.": d["desc_modif"],
-        "Environnements": ", ".join(d.get("env_deployes") or []) or "—",
-    }
-    st.table(pd.Series(info, name="Valeur"))
 
     if d["statut"] == REJECTED and d.get("motif_rejet"):
         st.error(f"Motif de rejet : {d['motif_rejet']}")
 
-    st.subheader("📝 Description & commentaires")
-    st.info(d["description"])
-    if d.get("commentaires"):
-        st.write(f"**Commentaires libres :** {d['commentaires']}")
+    # --- Disposition : Description à gauche, Cartouche plus petit à droite ---
+    col_desc, col_cartouche = st.columns([3, 2])
+
+    with col_desc:
+        st.subheader("📝 Description")
+        st.info(d["description"])
+        if d.get("commentaires"):
+            st.write(f"**Commentaires libres :** {d['commentaires']}")
+
+    with col_cartouche:
+        st.subheader("📌 Synthèse")
+        info = {
+            "Version": fmt_version(d["version"]),
+            "Partenaire / SI": d["partenaire"],
+            "Protocole": d["protocole"],
+            "Format": d["format"],
+            "Encodage": d["encodage"],
+            "Contient SEI": "Oui" if d.get("contient_sei") else "Non",
+            "Auteur / Date": f"{d['auteur']} ({d['date_soumission']})",
+            "Dernière modif.": d["desc_modif"],
+            "Environnements": ", ".join(d.get("env_deployes") or []) or "—",
+        }
+        # Affichage du tableau sans le header "Valeur" (conversion de la série en DataFrame sans nom de colonne)
+        df_cartouche = pd.DataFrame(list(info.items()), columns=["Propriété", ""])
+        st.dataframe(df_cartouche, hide_index=True, width="stretch", height=320)
 
     can_evolve = is_owner(d, user, role) and d["statut"] == DEPLOYED and not has_pending_evolution(d["code_flux"])
     can_edit = is_owner(d, user, role) and (
@@ -714,9 +725,9 @@ def page_detail() -> None:
     if can_edit:
         st.button("✏️ Modifier ce flux", on_click=go, args=("create_dci", d["id"]), width="stretch")
 
-    # Paramètres
+    # --- Paramètres sFTP / Kafka ---
     if d["protocole"] == "sFTP" and d.get("sftp_params"):
-        st.subheader("⚙️️ Paramètres sFTP & Chorégraphie")
+        st.subheader("⚙ Paramètres sFTP & Chorégraphie")
         p = d["sftp_params"]
         c1, c2 = st.columns(2)
         with c1:
@@ -744,8 +755,9 @@ def page_detail() -> None:
             with st.expander("📄 Afficher le contenu du schéma de message"):
                 st.code(kp.get("schema_content"))
 
+    # --- Objets Métiers (OM) & Liens de Stockage ---
     if d.get("oms"):
-        st.subheader("📦 Objets Métiers (OM)")
+        st.subheader("📦 Objets Métiers (OM) & Liens de Stockage")
         df_oms = []
         for om in d.get("oms", []):
             df_oms.append({
@@ -759,6 +771,23 @@ def page_detail() -> None:
                 "JDD": om.get("jdd_nom") or "—"
             })
         st.dataframe(pd.DataFrame(df_oms).fillna("—"), hide_index=True, width="stretch")
+
+        # Liens de stockage tout de suite en dessous des OM
+        st.markdown("##### 🔗 Liens de stockage par Objet Métier")
+        si_str = d["partenaire"].lower().replace(" ", "_")
+        sei_flag = "SEI" if d.get("contient_sei") else "FRA"
+
+        for om in d.get("oms", []):
+            om_name = om.get("nom")
+            if not om_name:
+                continue
+            with st.expander(f"Stockage pour l'OM : `{om_name}`"):
+                for env in ENVS:
+                    env_lower = env.lower()
+                    path_parquet = f"/projects/{env_lower}/has/dlk/Trusted-Zone/{si_str}/{sei_flag}/{om_name}"
+                    hive_table = f"{env_lower}hasdlk.{si_str}_{om_name.lower()}_{sei_flag}"
+                    st.markdown(f"**Environnement : `{env}`**")
+                    st.code(f"PATH (parquet) : {path_parquet}\nHIVE : {hive_table}", language="text")
 
     if d.get("sla"):
         st.subheader("🛡️ Service Level Agreement (SLA)")
@@ -774,7 +803,7 @@ def page_detail() -> None:
         if s.get("commentaires"):
             st.caption(f"Commentaires SLA : {s['commentaires']}")
 
-    # --- Vue spécifique Développeur pour le Suivi d'Évolution (Colonnes sFTP & Schémas Kafka)
+    # --- Analyse des Évolutions Techniques ---
     parent = get_dci(d.get("parent_id"))
     if role in (DEV, ADMIN) and parent:
         st.divider()
@@ -808,7 +837,6 @@ def page_detail() -> None:
                     st.info(f"Nouvel OM détecté : `{om_name}`")
         
         elif d["protocole"] == "Kafka":
-            # Le bloc Évolution du Schéma Kafka doit pouvoir s'ouvrir/se fermer (expander)
             with st.expander("🧬 Évolution du Schéma Kafka", expanded=True):
                 old_schema = parent.get("kafka_params", {}).get("schema_content", "")
                 new_schema = d.get("kafka_params", {}).get("schema_content", "")
