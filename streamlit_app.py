@@ -60,7 +60,7 @@ KAFKA_FIELDS = {
     "om_kafka": "Nom de l'OM",
 }
 SFTP_REQUIRED = {"code_choree": "Code chorée sFTP", "prefixe": "Préfixe", "suffixe": "Suffixe"}
-OM_KEYS = ("nom", "vol_moy", "vol_max", "frequence", "horaires")  # JDD exclu du versioning
+OM_KEYS = ("nom", "vol_moy", "vol_max", "frequence", "horaires", "header_present", "absence_header_champ", "colonnes_header")  # JDD exclu du versioning
 FLUX_CODE_RE = re.compile(r"^[A-Z0-9_]+$")
 
 
@@ -90,7 +90,8 @@ SEED_DCI = {
     "kafka_params": {},
     "oms": [
         {"nom": "LIEN_MANAGER", "vol_moy": 15.0, "vol_max": 50.0,
-         "frequence": "Quotidien", "horaires": "02:00", "jdd_nom": None}
+         "frequence": "Quotidien", "horaires": "02:00", "jdd_nom": None,
+         "header_present": True, "absence_header_champ": "", "colonnes_header": "ID_MGR;ID_COLLAB;DATE_DEBUT"}
     ],
     "sla": {
         "criticite": "Critique",
@@ -146,7 +147,6 @@ def log_action(action: str, details: str) -> None:
 
 
 def flash(message: str, icon: str = "✅") -> None:
-    """Message affiché (toast) au prochain rerun : survit aux st.rerun()/callbacks."""
     st.session_state.flash = (message, icon)
 
 
@@ -173,7 +173,6 @@ def fmt_version(v: float) -> str:
 
 
 def pick(options: list, value) -> int:
-    """Index d'une valeur dans une liste d'options (0 si absente) pour pré-remplir un selectbox."""
     return options.index(value) if value in options else 0
 
 
@@ -204,7 +203,6 @@ def has_pending_evolution(code_flux: str) -> bool:
 
 
 def structural_view(d: dict) -> dict:
-    """Partie du DCI qui déclenche une montée de version (sFTP / Kafka / OM)."""
     return {
         "protocole": d.get("protocole"),
         "sftp": d.get("sftp_params") or {},
@@ -237,6 +235,26 @@ def diff_rows(new: dict, old: dict) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["Champ", "Ancien", "Nouveau"])
 
 
+def compare_sftp_headers(new_om: dict, old_om: dict) -> dict:
+    """Compare les en-têtes ou colonnes définies entre deux versions d'un OM sFTP."""
+    old_cols = [c.strip().upper() for c in old_om.get("colonnes_header", "").split(";") if c.strip()]
+    new_cols = [c.strip().upper() for c in new_om.get("colonnes_header", "").split(";") if c.strip()]
+    
+    added = [c for c in new_cols if c not in old_cols]
+    removed = [c for c in old_cols if c not in new_cols]
+    return {"added": added, "removed": removed, "old": old_cols, "new": new_cols}
+
+
+def compare_kafka_schemas(new_schema: str, old_schema: str) -> dict:
+    """Compare sommairement les lignes/propriétés d'un schéma Kafka entre deux versions."""
+    old_lines = {l.strip() for l in old_schema.splitlines() if l.strip()}
+    new_lines = {l.strip() for l in new_schema.splitlines() if l.strip()}
+    
+    added = list(new_lines - old_lines)
+    removed = list(old_lines - new_lines)
+    return {"added": added, "removed": removed}
+
+
 def validate(p: dict, *, final: bool, is_new: bool) -> list[str]:
     errors: list[str] = []
     code = p["code_flux"]
@@ -247,7 +265,7 @@ def validate(p: dict, *, final: bool, is_new: bool) -> list[str]:
     elif is_new and any(d["code_flux"] == code for d in st.session_state.dcis):
         errors.append(f"Le code flux `{code}` existe déjà : faites une évolution du flux existant.")
 
-    if not final:  # un brouillon n'exige que le code flux
+    if not final:
         return errors
 
     if not p["description"].strip():
@@ -274,6 +292,8 @@ def validate(p: dict, *, final: bool, is_new: bool) -> list[str]:
         for om in p["oms"]:
             if om["vol_moy"] > om["vol_max"]:
                 errors.append(f"OM {om['nom'] or '?'} : volumétrie moyenne > volumétrie max.")
+            if not om.get("header_present", True) and not om.get("absence_header_champ", "").strip():
+                errors.append(f"OM {om['nom'] or '?'}: Le champ précisant la définition/structure du fichier sans header est obligatoire.")
 
     sla = p["sla"]
     if not sla["sla_metier"].strip() or not sla["canal"].strip():
@@ -290,7 +310,7 @@ def approve(dci_id: str) -> None:
     d = get_dci(dci_id)
     parent = get_dci(d.get("parent_id"))
     bumped = parent is not None and has_structural_changes(d, parent)
-    if bumped:  # une seule incrémentation, au moment de l'approbation
+    if bumped:
         d["version"] = round(parent["version"] + 1.0, 1)
     d["statut"] = APPROVED
     log_action(APPROVED, f"DCI {d['code_flux']} approuvé ({fmt_version(d['version'])}, montée de version : {bumped})")
@@ -308,7 +328,7 @@ def deploy(dci_id: str) -> None:
     d = get_dci(dci_id)
     d["statut"], d["env_deployes"] = DEPLOYED, list(ENVS)
     parent = get_dci(d.get("parent_id"))
-    if parent and parent["statut"] == DEPLOYED:  # l'ancienne version est archivée
+    if parent and parent["statut"] == DEPLOYED:
         parent["statut"] = ARCHIVED
     log_action(DEPLOYED, f"Flux {d['code_flux']} {fmt_version(d['version'])} déployé.")
     flash(f"{d['code_flux']} déployé !", "🚀")
@@ -440,7 +460,6 @@ def page_form() -> None:
     base = get_dci(ss.flux_id)
     back_button()
 
-    # --- Détermination du mode : création / évolution (nouvelle version) / édition en place
     if base is None:
         mode = "create"
     elif not is_owner(base, user, role):
@@ -523,8 +542,8 @@ def page_form() -> None:
             enc = ["aucun", "GPG", "PGP"]
             sftp_params["chiffrement"] = st.selectbox("Chiffrement", enc, key="f_s_enc", index=pick(enc, sftp0.get("chiffrement")))
 
-        # --- 3. Objets métiers (sFTP uniquement)
-        st.subheader("3. Objets Métiers (OM) & JDD")
+        # --- 3. Objets métiers (sFTP uniquement avec gestion d'en-tête)
+        st.subheader("3. Objets Métiers (OM) & Définition CSV")
         n_om = int(st.number_input("Nombre d'Objets Métiers", min_value=1, max_value=5,
                                    value=max(1, len(old_oms)), key="f_n_om"))
         for i in range(n_om):
@@ -549,10 +568,35 @@ def page_form() -> None:
             with o3:
                 horaires = st.text_input(f"Horaires #{i + 1}", value=old.get("horaires", "02:00"), key=f"f_om_hor_{i}")
                 jdd = st.file_uploader(f"JDD (CSV) pour {nom or 'OM'}", type=["csv"], key=f"f_om_jdd_{i}")
+
+            # Règle Métier 1 & 2 : En-tête présent ou champ dédié si absent + colonnes
+            h_col1, h_col2 = st.columns(2)
+            with h_col1:
+                header_present = st.selectbox(f"En-tête présent dans le fichier OM #{i + 1} ?", [True, False],
+                                              format_func=lambda x: "Oui" if x else "Non",
+                                              index=0 if old.get("header_present", True) else 1,
+                                              key=f"f_om_hp_{i}")
+            
+            absence_header_champ = ""
+            if not header_present:
+                with h_col2:
+                    absence_header_champ = st.text_input(f"Champ de définition des colonnes (absence d'en-tête) #{i + 1} *",
+                                                           value=old.get("absence_header_champ", ""),
+                                                           key=f"f_om_ahc_{i}",
+                                                           placeholder="Ex: Ordre strict des champs ou mapping")
+            
+            colonnes_header = st.text_input(f"Liste des colonnes (séparées par le séparateur ou ';') #{i + 1}",
+                                            value=old.get("colonnes_header", ""),
+                                            key=f"f_om_cols_{i}",
+                                            placeholder="COL1;COL2;COL3")
+
             if nom and sftp_params["prefixe"] and sftp_params["suffixe"]:
                 st.caption(f"📌 Fichier attendu : `{sftp_params['prefixe']}{nom}{sftp_params['suffixe']}`")
+            
             oms.append({"nom": nom, "vol_moy": vol_moy, "vol_max": vol_max, "frequence": freq,
-                        "horaires": horaires, "jdd_nom": jdd.name if jdd else old.get("jdd_nom")})
+                        "horaires": horaires, "jdd_nom": jdd.name if jdd else old.get("jdd_nom"),
+                        "header_present": header_present, "absence_header_champ": absence_header_champ,
+                        "colonnes_header": colonnes_header})
 
     # --- 4. SLA
     st.subheader("4. Service Level Agreement (SLA)")
@@ -601,7 +645,7 @@ def page_form() -> None:
         record = payload | meta | {
             "id": next_id(),
             "parent_id": base["id"] if base else None,
-            "version": base["version"] if base else 1.0,  # recalculée à l'approbation
+            "version": base["version"] if base else 1.0,
             "env_deployes": [],
         }
         ss.dcis.append(record)
@@ -640,7 +684,6 @@ def page_detail() -> None:
     if d.get("commentaires"):
         st.write(f"**Commentaires libres :** {d['commentaires']}")
 
-    # Actions propriétaire
     can_evolve = is_owner(d, user, role) and d["statut"] == DEPLOYED and not has_pending_evolution(d["code_flux"])
     can_edit = is_owner(d, user, role) and (
         d["statut"] in (DRAFT, REJECTED) or (role == ADMIN and d["statut"] == SUBMITTED))
@@ -680,10 +723,20 @@ def page_detail() -> None:
 
     if d.get("oms"):
         st.subheader("📦 Objets Métiers (OM)")
-        df = pd.DataFrame(d["oms"]).rename(columns={
-            "nom": "OM", "frequence": "Fréquence", "vol_moy": "Vol. moy. (Mo)",
-            "vol_max": "Vol. max (Mo)", "horaires": "Horaires", "jdd_nom": "JDD"})
-        st.dataframe(df.fillna("—"), hide_index=True, width="stretch")
+        df_oms = []
+        for om in d.get("oms", []):
+            df_oms.append({
+                "OM": om.get("nom"),
+                "Fréquence": om.get("frequence"),
+                "Vol. moy. (Mo)": om.get("vol_moy"),
+                "Vol. max (Mo)": om.get("vol_max"),
+                "Horaires": om.get("horaires"),
+                "En-tête présent": "Oui" if om.get("header_present", True) else "Non",
+                "Champ sans en-tête": om.get("absence_header_champ") or "—",
+                "Colonnes / Champs": om.get("colonnes_header") or "—",
+                "JDD": om.get("jdd_nom") or "—"
+            })
+        st.dataframe(pd.DataFrame(df_oms).fillna("—"), hide_index=True, width="stretch")
 
     if d.get("sla"):
         st.subheader("🛡️ Service Level Agreement (SLA)")
@@ -699,6 +752,60 @@ def page_detail() -> None:
         if s.get("commentaires"):
             st.caption(f"Commentaires SLA : {s['commentaires']}")
 
+    # --- Règle Dev 3 & 4 : Vue spécifique Développeur pour le Suivi d'Évolution (Colonnes sFTP & Schémas Kafka)
+    parent = get_dci(d.get("parent_id"))
+    if role in (DEV, ADMIN) and parent:
+        st.divider()
+        st.subheader("🔍 Analyse des Évolutions Techniques (Espace Développeur)")
+        
+        if d["protocole"] == "sFTP":
+            st.markdown("##### 📐 Évolution des Colonnes par OM (sFTP)")
+            old_oms_map = {om["nom"]: om for om in parent.get("oms", [])}
+            for om in d.get("oms", []):
+                om_name = om.get("nom")
+                old_om = old_oms_map.get(om_name)
+                if old_om:
+                    diff_res = compare_sftp_headers(om, old_om)
+                    with st.expander(f"OM : `{om_name}` — Colonnes modifiées"):
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.write("**Colonnes en plus (ajoutées) :**")
+                            if diff_res["added"]:
+                                for c in diff_res["added"]:
+                                    st.markdown(f"- :green[`+{c}`]")
+                            else:
+                                st.caption("Aucune colonne ajoutée.")
+                        with col_b:
+                            st.write("**Colonnes en moins (supprimées) :**")
+                            if diff_res["removed"]:
+                                for c in diff_res["removed"]:
+                                    st.markdown(f"- :red[`-{c}`]")
+                            else:
+                                st.caption("Aucune colonne supprimée.")
+                else:
+                    st.info(f"Nouvel OM détecté : `{om_name}`")
+        
+        elif d["protocole"] == "Kafka":
+            st.markdown("##### 🧬 Évolution du Schéma Kafka")
+            old_schema = parent.get("kafka_params", {}).get("schema", "")
+            new_schema = d.get("kafka_params", {}).get("schema", "")
+            schema_diff = compare_kafka_schemas(new_schema, old_schema)
+            col_ka, col_kb = st.columns(2)
+            with col_ka:
+                st.write("**Lignes / Propriétés ajoutées :**")
+                if schema_diff["added"]:
+                    for l in schema_diff["added"]:
+                        st.markdown(f"- :green[`+{l}`]")
+                else:
+                    st.caption("Aucun ajout dans le schéma.")
+            with col_kb:
+                st.write("**Lignes / Propriétés supprimées :**")
+                if schema_diff["removed"]:
+                    for l in schema_diff["removed"]:
+                        st.markdown(f"- :red[`-{l}`]")
+                else:
+                    st.caption("Aucune suppression dans le schéma.")
+
     # Historique des versions
     history = sorted((x for x in ss.dcis if x["code_flux"] == d["code_flux"]), key=lambda x: x["id"])
     if len(history) > 1:
@@ -708,11 +815,10 @@ def page_detail() -> None:
               "Auteur": h["auteur"], "Date": h["date_soumission"], "Changements": h["desc_modif"]}
              for h in history]), hide_index=True, width="stretch")
 
-    # Comparatif (admin)
-    parent = get_dci(d.get("parent_id"))
+    # Comparatif standard (admin)
     if role == ADMIN and parent:
         st.divider()
-        st.subheader(f"🔍 Différences avec la {fmt_version(parent['version'])}")
+        st.subheader(f"🔍 Différences globales avec la {fmt_version(parent['version'])}")
         diff = diff_rows(d, parent)
         if diff.empty:
             st.success("Aucune différence détectée.")
@@ -746,7 +852,6 @@ def page_detail() -> None:
         st.subheader("💻 Déploiement")
         st.button("🔀 Marquer comme DEPLOYED", on_click=deploy, args=(d["id"],))
 
-    # Demande d'accès
     access_button(d, key="detail_access", label="🔑 Demander l'accès à ce flux")
 
 
