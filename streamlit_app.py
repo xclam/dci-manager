@@ -25,7 +25,7 @@ if "users" not in st.session_state:
     }
 
 if "current_page" not in st.session_state:
-    st.session_state.current_page = "home"  # 'home', 'create_dci', 'detail_dci'
+    st.session_state.current_page = "home"
 
 if "selected_flux_id" not in st.session_state:
     st.session_state.selected_flux_id = None
@@ -114,7 +114,7 @@ st.sidebar.info(
 
 if current_role == "Administrateur":
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🛡️ Admin Panel")
+    st.sidebar.subheader("🛡️️ Admin Panel")
     pending_count = len([d for d in st.session_state.dcis if d["statut"] == "SUBMITTED"])
     access_count = len([da for da in st.session_state.demandes_acces if da["statut"] == "EN ATTENTE"])
     st.sidebar.write(f"📥 Validations DCI : **{pending_count}**")
@@ -134,7 +134,7 @@ col_title, col_btn = st.columns([3, 1])
 with col_title:
     st.title("📚 Catalogue des Flux Datalake (B4ALL)")
 with col_btn:
-    st.write("")  # Ajustement vertical
+    st.write("")
     if current_role in ["Partenaire", "Administrateur"]:
         if st.button("➕ Demande d'ajout de flux", use_container_width=True, type="primary"):
             st.session_state.current_page = "create_dci"
@@ -152,7 +152,6 @@ st.markdown("---")
 # ------------------------------------------
 if st.session_state.current_page == "home":
     
-    # Espace Administrateur / Validations rapides en haut si besoin
     if current_role == "Administrateur":
         pending_dcis = [d for d in st.session_state.dcis if d["statut"] == "SUBMITTED"]
         if pending_dcis:
@@ -205,7 +204,6 @@ if st.session_state.current_page == "home":
                         st.rerun()
                 st.divider()
 
-    # Section de gestion des demandes d'accès pour Admin en bas de page d'accueil
     if current_role == "Administrateur":
         st.markdown("### 🔑 Demandes d'accès en attente")
         pending_access = [da for da in st.session_state.demandes_acces if da["statut"] == "EN ATTENTE"]
@@ -241,10 +239,16 @@ elif st.session_state.current_page == "create_dci":
         with col1:
             code_flux = st.text_input("Code flux métier *", placeholder="Ex: FLX_VENTES_MAGASIN")
             partenaire_source = st.text_input("Partenaire / SI source *", value=selected_user)
-            format_flux = st.selectbox("Format *", ["CSV", "JSON", "XML", "Proto"])
+            
+            # Choix conditionnel du format selon le protocole
+            protocole = st.selectbox("Protocole d'échange *", ["sFTP", "Kafka"])
+            if protocole == "Kafka":
+                format_flux = st.selectbox("Format *", ["JSON", "Proto", "XML"])
+            else:
+                format_flux = st.selectbox("Format *", ["CSV"])
+                
         with col2:
             desc_fonc = st.text_area("Description fonctionnelle *", placeholder="Description métier courte...")
-            protocole = st.selectbox("Protocole d'échange *", ["sFTP", "Kafka"])
             encodage = st.selectbox("Encodage *", ["UTF-8"])
 
         commentaires = st.text_area("Commentaires libres", "")
@@ -264,7 +268,7 @@ elif st.session_state.current_page == "create_dci":
                 kafka_params["topic_prd"] = st.text_input("Nom du topic - PRD *", placeholder="prd.mon_topic")
                 kafka_params["schema"] = st.text_area("Schéma de message (Avro / JSON / Protobuf) *")
 
-        # Paramètres sFTP
+        # Paramètres sFTP & Chorégraphie (Affiché uniquement si protocole == sFTP)
         sftp_params = {}
         oms_list = []
         if protocole == "sFTP":
@@ -382,12 +386,9 @@ elif st.session_state.current_page == "detail_dci":
         
         st.json(dci)
 
-        col_act1, col_act2 = st.columns(2)
-
-        # Actions Administrateur sur un DCI soumis
         if current_role == "Administrateur" and dci["statut"] == "SUBMITTED":
             st.markdown("---")
-            st.subheader("🛡️️ Actions Administrateur")
+            st.subheader("🛡 Actions Administrateur")
             env_cible = st.selectbox("Environnement cible", ["DEV", "REC", "PPD", "PRD"], key="det_env_cible")
             motif_rejet = st.text_input("Motif de rejet (si refus)", key="det_motif")
 
@@ -409,7 +410,6 @@ elif st.session_state.current_page == "detail_dci":
                         st.warning("DCI rejeté.")
                         st.rerun()
 
-        # Actions Développeur sur un DCI approuvé (Merge Request)
         if current_role == "Développeur" and dci["statut"] == "APPROVED":
             st.markdown("---")
             st.subheader("💻 Espace Développeur (GitLab)")
@@ -419,7 +419,6 @@ elif st.session_state.current_page == "detail_dci":
                 st.success("Merge validé ! Flux actif.")
                 st.rerun()
 
-        # Action Consommateur / Partenaire : Demande d'accès
         if current_role in ["Consommateur", "Partenaire"] and dci["statut"] == "DEPLOYED":
             st.markdown("---")
             if st.button("🔑 Demander l'accès à ce flux"):
