@@ -42,13 +42,17 @@ if "dcis" not in st.session_state:
             "format": "CSV",
             "encodage": "UTF-8",
             "commentaires": "Flux critique pour les habilitations",
-            "prefixe": "MYHR_",
-            "suffixe": "_YYYYMMDD.csv",
-            "structure": "Fichiers CSV indépendants",
-            "separateur": ";",
-            "retour_chariot": "Unix (LF)",
-            "compression": "gzip",
-            "chiffrement": "GPG",
+            "sftp_params": {
+                "code_choree": "CHOR_HR",
+                "structure": "Fichiers CSV indépendants",
+                "separateur": ";",
+                "prefixe": "MYHR_",
+                "suffixe": "_YYYYMMDD.csv",
+                "retour_chariot": "Unix (LF)",
+                "compression": "gzip",
+                "chiffrement": "GPG",
+            },
+            "kafka_params": {},
             "oms": [
                 {
                     "nom": "LIEN_MANAGER",
@@ -222,7 +226,6 @@ if st.session_state.current_page == "home":
                         st.write(d["description"])
                         st.caption(f"Protocole : `{d['protocole']}` | Statut : **{d['statut']}**")
                     with c3:
-                        # Le développeur n'a pas besoin d'avoir le bouton demande d'accès
                         if d["statut"] == "DEPLOYED" and current_role != "Développeur":
                             existing_req = next(
                                 (da for da in st.session_state.demandes_acces 
@@ -433,8 +436,7 @@ elif st.session_state.current_page == "create_dci":
         elif criticite != "Faible" and not impact.strip():
             st.error("L'impact métier si flux KO est obligatoire pour une criticité Moyenne ou Critique.")
         else:
-            # Règle automatique par défaut : Si modification sftp, kafka ou om -> considéré comme évolution
-            is_real_evolution = True
+            has_sftp_kafka_om_changes = True
             if existing_flux:
                 old_sftp = existing_flux.get("sftp_params", {})
                 old_kafka = existing_flux.get("kafka_params", {})
@@ -442,16 +444,15 @@ elif st.session_state.current_page == "create_dci":
                 old_proto = existing_flux.get("protocole")
                 
                 if protocole == old_proto and sftp_params == old_sftp and kafka_params == old_kafka and oms_list == old_oms:
-                    is_real_evolution = False
+                    has_sftp_kafka_om_changes = False
 
-            # Si l'admin modifie directement, les modifications s'enregistrent tout de suite sans passer par SUBMITTED
             if current_role == "Administrateur" and existing_flux:
                 statut_cible = existing_flux["statut"]
             else:
                 statut_cible = "SUBMITTED" if submitted_final else "DRAFT"
             
             if existing_flux:
-                new_version = round(existing_flux["version"] + 1.0, 1) if is_real_evolution else existing_flux["version"]
+                new_version = round(existing_flux["version"] + 1.0, 1) if has_sftp_kafka_om_changes else existing_flux["version"]
             else:
                 new_version = 1.0
 
@@ -590,29 +591,89 @@ elif st.session_state.current_page == "detail_dci":
             if s.get('commentaires'):
                 st.caption(f"Commentaires SLA : {s.get('commentaires')}")
 
-        # Visualisation des différences (Diff) si le DCI possède une modification / historique ou comparaison
+        # Pour l'admin : Visualisation en ROUGE des différences entre le DCI soumis et l'ancienne version déployée (si elle existe)
         if current_role == "Administrateur":
             st.markdown("---")
-            st.subheader("🔍 Visualisation des différences & Paramétrage sensible")
+            st.subheader("🔍 Comparatif & Différences avec la version précédente")
             
-            # Détection des modifications (paramètres sftp, kafka ou om)
-            # Pour l'exemple, affichage visuel structuré des blocs clés modifiés ou comparaison textuelle claire
-            st.info("💡 Aide Admin : Les modifications sur les paramètres sFTP/Kafka ou les Objets Métiers (OM) impactent directement l'intégration flux.")
+            # Recherche de l'ancienne version ou version précédente pour ce même code_flux
+            same_code_flux_items = [d for d in st.session_state.dcis if d["code_flux"] == dci["code_flux"] and d["id"] != dci["id"]]
+            old_version_dci = max(same_code_flux_items, key=lambda x: x["version"]) if same_code_flux_items else None
             
-            # Affichage côte à côte ou format JSON structuré diff
-            with st.expander("Voir le détail brut complet du DCI (JSON)", expanded=False):
-                st.json(dci)
+            if not old_version_dci:
+                st.info("Aucune version précédente trouvée pour ce flux (première version).")
+            else:
+                # Vérification des modifications sur sftp, kafka ou om
+                has_sftp_kafka_om_changes = (
+                    dci.get("protocole") != old_version_dci.get("protocole") or
+                    dci.get("sftp_params", {}) != old_version_dci.get("sftp_params", {}) or
+                    dci.get("kafka_params", {}) != old_version_dci.get("kafka_params", {}) or
+                    dci.get("oms", []) != old_version_dci.get("oms", [])
+                )
 
-        # Actions Administrateur avec main sur l'évolution de version
+                st.markdown(f"Comparaison avec la version précédente (**v{old_version_dci['version']}**) :")
+                
+                # Fonction utilitaire pour afficher en rouge si modification
+                def show_diff_field(label, val_new, val_old):
+                    if str(val_new) != str(val_old):
+                        st.markdown(f"- **{label}** : <span style='color:red;'>Nouveau: {val_new} (Ancien: {val_old})</span>", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"- **{label}** : {val_new}")
+
+                show_diff_field("Protocole", dci.get("protocole"), old_version_dci.get("protocole"))
+                show_diff_field("Description", dci.get("description"), old_version_dci.get("description"))
+                
+                if dci.get("protocole") == "sFTP":
+                    st.markdown("**Paramètres sFTP :**")
+                    p_new = dci.get("sftp_params", {})
+                    p_old = old_version_dci.get("sftp_params", {})
+                    for k in set(list(p_new.keys()) + list(p_old.keys())):
+                        v_n = p_new.get(k, "-")
+                        v_o = p_old.get(k, "-")
+                        show_diff_field(f"  - sFTP {k}", v_n, v_o)
+                elif dci.get("protocole") == "Kafka":
+                    st.markdown("**Paramètres Kafka :**")
+                    k_new = dci.get("kafka_params", {})
+                    k_old = old_version_dci.get("kafka_params", {})
+                    for k in set(list(k_new.keys()) + list(k_old.keys())):
+                        v_n = k_new.get(k, "-")
+                        v_o = k_old.get(k, "-")
+                        show_diff_field(f"  - Kafka {k}", v_n, v_o)
+
+                st.markdown("**Objets Métiers (OM) :**")
+                oms_n = dci.get("oms", [])
+                oms_o = old_version_dci.get("oms", [])
+                if str(oms_n) != str(oms_o):
+                    st.markdown(f"- <span style='color:red;'>Modification détectée sur les Objets Métiers (OM)</span>", unsafe_allow_html=True)
+                    st.markdown(f"  - <span style='color:red;'>Nouveaux OM : {oms_n}</span>", unsafe_allow_html=True)
+                    st.markdown(f"  - <span style='color:red;'>Anciens OM : {oms_o}</span>", unsafe_allow_html=True)
+                else:
+                    st.markdown("- OM inchangés.")
+
+        # Actions Administrateur
         if current_role == "Administrateur":
             st.markdown("---")
             st.subheader("🛡 Actions Administrateur")
             
-            # Option demandée : garder la main pour dire s'il s'agit d'une évolution de version ou non lors de la validation
+            # Détermination automatique si des modifications ont eu lieu sur les paramètres sFTP/Kafka ou les OM
+            same_code_flux_items = [d for d in st.session_state.dcis if d["code_flux"] == dci["code_flux"] and d["id"] != dci["id"]]
+            old_version_dci = max(same_code_flux_items, key=lambda x: x["version"]) if same_code_flux_items else None
+            
+            auto_has_changes = True
+            if old_version_dci:
+                auto_has_changes = (
+                    dci.get("protocole") != old_version_dci.get("protocole") or
+                    dci.get("sftp_params", {}) != old_version_dci.get("sftp_params", {}) or
+                    dci.get("kafka_params", {}) != old_version_dci.get("kafka_params", {}) or
+                    dci.get("oms", []) != old_version_dci.get("oms", [])
+                )
+
+            # La checkbox "considérer comme une évolution de version" est cochée si et seulement si il y a eu des modifications sFTP/Kafka ou OM
             is_version_evolution_checked = st.checkbox(
                 "📈 Considéré comme une évolution de version (+1.0)", 
-                value=True, 
-                help="Si coché, la validation incrémentera la version du DCI. Si décoché, la version actuelle est conservée."
+                value=auto_has_changes, 
+                disabled=True,
+                help="Coché automatiquement si et seulement si il y a eu des modifications sur les paramètres sFTP/Kafka ou les Objets Métiers (OM)."
             )
 
             motif_rejet = st.text_input("Motif de rejet (si refus)", key="det_motif")
@@ -620,11 +681,7 @@ elif st.session_state.current_page == "detail_dci":
             c_ap, c_rj, c_mo = st.columns(3)
             with c_ap:
                 if dci["statut"] == "SUBMITTED" and st.button("✅ Approuver le DCI"):
-                    if not is_version_evolution_checked:
-                        # Conserve la version actuelle
-                        pass
-                    else:
-                        # Incrémente la version si l'admin le souhaite explicitement
+                    if is_version_evolution_checked:
                         dci["version"] = round(dci["version"] + 1.0, 1)
 
                     dci["statut"] = "APPROVED"
@@ -657,7 +714,7 @@ elif st.session_state.current_page == "detail_dci":
                 st.success("Flux marqué comme déployé (DEPLOYED).")
                 st.rerun()
 
-        # Demande d'accès pour Consommateurs / Partenaires uniquement (le Développeur n'y a pas accès)
+        # Demande d'accès pour Consommateurs / Partenaires (le Développeur n'y a pas accès)
         if current_role in ["Consommateur", "Partenaire"] and dci["statut"] == "DEPLOYED":
             st.markdown("---")
             existing_req = next(
