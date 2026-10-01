@@ -185,24 +185,48 @@ if st.session_state.current_page == "home":
     if not filtered:
         st.info("Aucun flux ne correspond à votre recherche.")
     else:
+        # Regroupement par SI partenaire
+        groupes_partenaires = {}
         for d in filtered:
-            with st.container():
-                c1, c2, c3, c4, c5 = st.columns([2, 3, 1, 1, 1])
-                with c1:
-                    st.markdown(f"**{d['code_flux']}**")
-                    st.caption(f"SI : {d['partenaire']}")
-                with c2:
-                    st.write(d["description"])
-                with c3:
-                    st.markdown(f"`{d['protocole']}`")
-                with c4:
-                    st.markdown(f"Statut: **{d['statut']}**")
-                with c5:
-                    if st.button("Voir détail", key=f"flux_btn_{d['id']}", use_container_width=True):
-                        st.session_state.selected_flux_id = d["id"]
-                        st.session_state.current_page = "detail_dci"
-                        st.rerun()
-                st.divider()
+            part = d.get("partenaire", "Inconnu")
+            if part not in groupes_partenaires:
+                groupes_partenaires[part] = []
+            groupes_partenaires[part].append(d)
+
+        for partenaire, flux_list in groupes_partenaires.items():
+            with st.expander(f"🏢 SI Partenaire : **{partenaire}** ({len(flux_list)} flux)", expanded=True):
+                for d in flux_list:
+                    c1, c2, c3, c4 = st.columns([2, 4, 1, 1])
+                    with c1:
+                        # Remplacement du bouton "Voir détail" par un lien cliquable sur le code flux
+                        if st.button(f"📌 {d['code_flux']}", key=f"link_flux_{d['id']}", use_container_width=True):
+                            st.session_state.selected_flux_id = d["id"]
+                            st.session_state.current_page = "detail_dci"
+                            st.rerun()
+                    with c2:
+                        st.write(d["description"])
+                        st.caption(f"Protocole : `{d['protocole']}` | Statut : **{d['statut']}**")
+                    with c3:
+                        # Bouton demander l'accès (affiché si le flux est déployé par exemple, ou globalement)
+                        if d["statut"] == "DEPLOYED":
+                            if st.button("🔑 Accès", key=f"acc_btn_{d['id']}", use_container_width=True, help="Demander l'accès à ce flux"):
+                                st.session_state.demandes_acces.append({
+                                    "flux": d["code_flux"],
+                                    "demandeur": selected_user,
+                                    "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    "statut": "EN ATTENTE"
+                                })
+                                log_action(selected_user, "DEMANDE_ACCES", f"Demande d'accès au flux {d['code_flux']}")
+                                st.success(f"Demande d'accès envoyée pour {d['code_flux']} !")
+                                st.rerun()
+                        else:
+                            st.caption("Non déployé")
+                    with c4:
+                        if st.button("Détails", key=f"det_btn_{d['id']}", use_container_width=True):
+                            st.session_state.selected_flux_id = d["id"]
+                            st.session_state.current_page = "detail_dci"
+                            st.rerun()
+                    st.divider()
 
     if current_role == "Administrateur":
         st.markdown("### 🔑 Demandes d'accès en attente")
@@ -233,21 +257,18 @@ elif st.session_state.current_page == "create_dci":
     st.title("➕ Déclaration / Ajout d'un Contrat d'Interface (DCI)")
     st.markdown("Remplissez les informations ci-dessous pour déclarer un nouveau flux.")
 
-    # Sortie du st.form pour permettre le rechargement dynamique immédiat lors du changement de protocole
     st.subheader("1. Métadonnées du flux")
     col1, col2 = st.columns(2)
     with col1:
         code_flux = st.text_input("Code flux métier *", placeholder="Ex: FLX_VENTES_MAGASIN")
         partenaire_source = st.text_input("Partenaire / SI source *", value=selected_user)
         
-        # Le selectbox avec on_change pour forcer le rafraîchissement instantané hors formulaire bloquant
         protocole = st.selectbox(
             "Protocole d'échange *", 
             ["sFTP", "Kafka"], 
             key="input_protocole"
         )
         
-        # Adaptation dynamique du format selon le protocole
         if protocole == "Kafka":
             format_flux = st.selectbox("Format *", ["json", "proto", "xml"], key="fmt_kafka")
         else:
@@ -259,12 +280,10 @@ elif st.session_state.current_page == "create_dci":
 
     commentaires = st.text_area("Commentaires libres", "")
 
-    # Variables pour stocker les configurations conditionnelles
     kafka_params = {}
     sftp_params = {}
     oms_list = []
 
-    # Affichage conditionnel direct (Bloc 2)
     if protocole == "Kafka":
         st.subheader("2. Paramètres Kafka")
         c1, c2 = st.columns(2)
