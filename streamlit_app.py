@@ -233,140 +233,148 @@ elif st.session_state.current_page == "create_dci":
     st.title("➕ Déclaration / Ajout d'un Contrat d'Interface (DCI)")
     st.markdown("Remplissez les informations ci-dessous pour déclarer un nouveau flux.")
 
-    with st.form("form_create_dci"):
-        st.subheader("1. Métadonnées du flux")
-        col1, col2 = st.columns(2)
-        with col1:
-            code_flux = st.text_input("Code flux métier *", placeholder="Ex: FLX_VENTES_MAGASIN")
-            partenaire_source = st.text_input("Partenaire / SI source *", value=selected_user)
-            
-            # Choix du protocole
-            protocole = st.selectbox("Protocole d'échange *", ["sFTP", "Kafka"])
-            
-            # Application de la règle : Kafka -> json/proto/xml | sFTP -> csv
-            if protocole == "Kafka":
-                format_flux = st.selectbox("Format *", ["json", "proto", "xml"])
-            else:
-                format_flux = st.selectbox("Format *", ["csv"])
-                
-        with col2:
-            desc_fonc = st.text_area("Description fonctionnelle *", placeholder="Description métier courte...")
-            encodage = st.selectbox("Encodage *", ["UTF-8"])
-
-        commentaires = st.text_area("Commentaires libres", "")
-
-        # Paramètres Kafka (affiché si protocole == Kafka)
-        kafka_params = {}
+    # Sortie du st.form pour permettre le rechargement dynamique immédiat lors du changement de protocole
+    st.subheader("1. Métadonnées du flux")
+    col1, col2 = st.columns(2)
+    with col1:
+        code_flux = st.text_input("Code flux métier *", placeholder="Ex: FLX_VENTES_MAGASIN")
+        partenaire_source = st.text_input("Partenaire / SI source *", value=selected_user)
+        
+        # Le selectbox avec on_change pour forcer le rafraîchissement instantané hors formulaire bloquant
+        protocole = st.selectbox(
+            "Protocole d'échange *", 
+            ["sFTP", "Kafka"], 
+            key="input_protocole"
+        )
+        
+        # Adaptation dynamique du format selon le protocole
         if protocole == "Kafka":
-            st.subheader("2. Paramètres Kafka")
-            c1, c2 = st.columns(2)
-            with c1:
-                kafka_params["topic_dev"] = st.text_input("Nom du topic - DEV *", placeholder="dev.mon_topic")
-                kafka_params["topic_ppd"] = st.text_input("Nom du topic - PPD *", placeholder="ppd.mon_topic")
-                kafka_params["cluster"] = st.text_input("Nom du cluster Kafka *")
-                kafka_params["om_kafka"] = st.text_input("Nom de l'OM *")
-            with c2:
-                kafka_params["topic_rec"] = st.text_input("Nom du topic - REC *", placeholder="rec.mon_topic")
-                kafka_params["topic_prd"] = st.text_input("Nom du topic - PRD *", placeholder="prd.mon_topic")
-                kafka_params["schema"] = st.text_area("Schéma de message (Avro / JSON / Protobuf) *")
+            format_flux = st.selectbox("Format *", ["json", "proto", "xml"], key="fmt_kafka")
+        else:
+            format_flux = st.selectbox("Format *", ["csv"], key="fmt_sftp")
+            
+    with col2:
+        desc_fonc = st.text_area("Description fonctionnelle *", placeholder="Description métier courte...")
+        encodage = st.selectbox("Encodage *", ["UTF-8"])
 
-        # Paramètres sFTP & Chorégraphie (Affiché uniquement si protocole == sFTP)
-        sftp_params = {}
-        oms_list = []
-        if protocole == "sFTP":
-            st.subheader("2. Paramètres sFTP & Chorégraphie")
-            sc1, sc2 = st.columns(2)
-            with sc1:
-                sftp_params["code_choree"] = st.text_input("Code chorée sFTP *", placeholder="CHOR_JOB")
-                sftp_params["structure"] = st.selectbox("Structure d'envoi *", ["Fichiers CSV indépendants", "Archive ZIP contenant des CSV"])
-                if sftp_params["structure"] == "Archive ZIP contenant des CSV":
-                    sftp_params["nom_archive"] = st.text_input("Nom de l'archive ZIP *")
-                sftp_params["separateur"] = st.selectbox("Séparateur CSV *", [";", ",", "|", "\\t"])
-            with sc2:
-                sftp_params["prefixe"] = st.text_input("Préfixe du nom de fichier *", placeholder="MYHR_")
-                sftp_params["suffixe"] = st.text_input("Suffixe / pattern timestamp *", value="_YYYYMMDD.csv")
-                sftp_params["retour_chariot"] = st.selectbox("Gestion des retours chariot *", ["Unix (LF)", "Windows"])
-                sftp_params["compression"] = st.selectbox("Compression", ["aucune", "gzip", "zip"])
-                sftp_params["chiffrement"] = st.selectbox("Chiffrement", ["aucun", "GPG", "PGP"])
+    commentaires = st.text_area("Commentaires libres", "")
 
-            st.subheader("3. Objets Métiers (OM) & JDD")
-            num_om = st.number_input("Nombre d'Objets Métiers (OM)", min_value=1, max_value=5, value=1)
-            for i in range(int(num_om)):
-                st.markdown(f"**Objet Métier #{i+1}**")
-                oc1, oc2, oc3 = st.columns(3)
-                with oc1:
-                    om_nom = st.text_input(f"Nom de l'OM #{i+1} (MAJUSCULES) *", key=f"create_om_nom_{i}")
-                    om_freq = st.selectbox(f"Fréquence #{i+1} *", ["Quotidien", "Hebdomadaire", "Mensuel", "Événementiel"], key=f"create_om_freq_{i}")
-                with oc2:
-                    om_vol_moy = st.number_input(f"Volumétrie moyenne (Mo) #{i+1}", value=10.0, key=f"create_om_vmoy_{i}")
-                    om_vol_max = st.number_input(f"Volumétrie max (Mo) #{i+1}", value=50.0, key=f"create_om_vmax_{i}")
-                with oc3:
-                    om_horaires = st.text_input(f"Horaires #{i+1}", placeholder="02:00", key=f"create_om_hor_{i}")
-                    jdd_file = st.file_uploader(f"JDD (CSV) pour {om_nom or 'OM'}", type=["csv"], key=f"create_jdd_{i}")
+    # Variables pour stocker les configurations conditionnelles
+    kafka_params = {}
+    sftp_params = {}
+    oms_list = []
 
-                if om_nom and sftp_params.get("prefixe") and sftp_params.get("suffixe"):
-                    nom_attendu = f"{sftp_params['prefixe']}{om_nom.upper()}{sftp_params['suffixe']}"
-                    st.caption(f"📌 Fichier attendu : `{nom_attendu}`")
+    # Affichage conditionnel direct (Bloc 2)
+    if protocole == "Kafka":
+        st.subheader("2. Paramètres Kafka")
+        c1, c2 = st.columns(2)
+        with c1:
+            kafka_params["topic_dev"] = st.text_input("Nom du topic - DEV *", placeholder="dev.mon_topic")
+            kafka_params["topic_ppd"] = st.text_input("Nom du topic - PPD *", placeholder="ppd.mon_topic")
+            kafka_params["cluster"] = st.text_input("Nom du cluster Kafka *")
+            kafka_params["om_kafka"] = st.text_input("Nom de l'OM *")
+        with c2:
+            kafka_params["topic_rec"] = st.text_input("Nom du topic - REC *", placeholder="rec.mon_topic")
+            kafka_params["topic_prd"] = st.text_input("Nom du topic - PRD *", placeholder="prd.mon_topic")
+            kafka_params["schema"] = st.text_area("Schéma de message (Avro / JSON / Protobuf) *")
 
-                oms_list.append({
-                    "nom": om_nom,
-                    "vol_moy": om_vol_moy,
-                    "vol_max": om_vol_max,
-                    "frequence": om_freq,
-                    "horaires": om_horaires,
-                    "jdd_present": jdd_file is not None
-                })
+    elif protocole == "sFTP":
+        st.subheader("2. Paramètres sFTP & Chorégraphie")
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            sftp_params["code_choree"] = st.text_input("Code chorée sFTP *", placeholder="CHOR_JOB")
+            sftp_params["structure"] = st.selectbox("Structure d'envoi *", ["Fichiers CSV indépendants", "Archive ZIP contenant des CSV"])
+            if sftp_params["structure"] == "Archive ZIP contenant des CSV":
+                sftp_params["nom_archive"] = st.text_input("Nom de l'archive ZIP *")
+            sftp_params["separateur"] = st.selectbox("Séparateur CSV *", [";", ",", "|", "\\t"])
+        with sc2:
+            sftp_params["prefixe"] = st.text_input("Préfixe du nom de fichier *", placeholder="MYHR_")
+            sftp_params["suffixe"] = st.text_input("Suffixe / pattern timestamp *", value="_YYYYMMDD.csv")
+            sftp_params["retour_chariot"] = st.selectbox("Gestion des retours chariot *", ["Unix (LF)", "Windows"])
+            sftp_params["compression"] = st.selectbox("Compression", ["aucune", "gzip", "zip"])
+            sftp_params["chiffrement"] = st.selectbox("Chiffrement", ["aucun", "GPG", "PGP"])
 
-        st.subheader("4. SLA (Service Level Agreement)")
-        s1, s2 = st.columns(2)
-        with s1:
-            criticite = st.selectbox("Criticité *", ["Faible", "Moyen", "Critique"])
-            impact = st.text_area("Impact métier si flux KO *")
-            sla_metier = st.text_input("SLA métier *", placeholder="J+1 8h00")
-        with s2:
-            canal_incident = st.text_input("Canal incident *", placeholder="Email, Teams...")
-            penalite = st.selectbox("Soumis à pénalité *", ["Non", "Oui"])
-            sla_comm = st.text_area("Commentaires SLA", "")
+        st.subheader("3. Objets Métiers (OM) & JDD")
+        num_om = st.number_input("Nombre d'Objets Métiers (OM)", min_value=1, max_value=5, value=1)
+        for i in range(int(num_om)):
+            st.markdown(f"**Objet Métier #{i+1}**")
+            oc1, oc2, oc3 = st.columns(3)
+            with oc1:
+                om_nom = st.text_input(f"Nom de l'OM #{i+1} (MAJUSCULES) *", key=f"create_om_nom_{i}")
+                om_freq = st.selectbox(f"Fréquence #{i+1} *", ["Quotidien", "Hebdomadaire", "Mensuel", "Événementiel"], key=f"create_om_freq_{i}")
+            with oc2:
+                om_vol_moy = st.number_input(f"Volumétrie moyenne (Mo) #{i+1}", value=10.0, key=f"create_om_vmoy_{i}")
+                om_vol_max = st.number_input(f"Volumétrie max (Mo) #{i+1}", value=50.0, key=f"create_om_vmax_{i}")
+            with oc3:
+                om_horaires = st.text_input(f"Horaires #{i+1}", placeholder="02:00", key=f"create_om_hor_{i}")
+                jdd_file = st.file_uploader(f"JDD (CSV) pour {om_nom or 'OM'}", type=["csv"], key=f"create_jdd_{i}")
 
-        desc_modif = st.text_input("Description des changements", value="Création initiale du flux")
+            if om_nom and sftp_params.get("prefixe") and sftp_params.get("suffixe"):
+                nom_attendu = f"{sftp_params['prefixe']}{om_nom.upper()}{sftp_params['suffixe']}"
+                st.caption(f"📌 Fichier attendu : `{nom_attendu}`")
 
-        submitted_draft = st.form_submit_button("💾 Enregistrer en Brouillon")
-        submitted_final = st.form_submit_button("🚀 Soumettre le DCI")
+            oms_list.append({
+                "nom": om_nom,
+                "vol_moy": om_vol_moy,
+                "vol_max": om_vol_max,
+                "frequence": om_freq,
+                "horaires": om_horaires,
+                "jdd_present": jdd_file is not None
+            })
 
-        if submitted_draft or submitted_final:
-            if not code_flux or not desc_fonc:
-                st.error("Veuillez remplir les champs obligatoires (Code flux et Description).")
-            else:
-                statut_cible = "SUBMITTED" if submitted_final else "DRAFT"
-                new_dci = {
-                    "id": f"DCI-{len(st.session_state.dcis)+1:03d}",
-                    "code_flux": code_flux,
-                    "description": desc_fonc,
-                    "partenaire": partenaire_source,
-                    "protocole": protocole,
-                    "format": format_flux,
-                    "encodage": encodage,
-                    "commentaires": commentaires,
-                    "kafka_params": kafka_params,
-                    "sftp_params": sftp_params,
-                    "oms": oms_list,
-                    "sla": {
-                        "criticite": criticite, "impact": impact,
-                        "sla_metier": sla_metier, "canal": canal_incident,
-                        "penalite": penalite, "commentaires": sla_comm
-                    },
-                    "version": 1.0,
-                    "statut": statut_cible,
-                    "date_soumission": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "auteur": selected_user,
-                    "desc_modif": desc_modif,
-                    "env_deployes": []
-                }
-                st.session_state.dcis.append(new_dci)
-                log_action(selected_user, statut_cible, f"DCI {code_flux} enregistré ({statut_cible})")
-                st.success("DCI enregistré avec succès !")
-                st.session_state.current_page = "home"
-                st.rerun()
+    st.subheader("4. SLA (Service Level Agreement)")
+    s1, s2 = st.columns(2)
+    with s1:
+        criticite = st.selectbox("Criticité *", ["Faible", "Moyen", "Critique"])
+        impact = st.text_area("Impact métier si flux KO *")
+        sla_metier = st.text_input("SLA métier *", placeholder="J+1 8h00")
+    with s2:
+        canal_incident = st.text_input("Canal incident *", placeholder="Email, Teams...")
+        penalite = st.selectbox("Soumis à pénalité *", ["Non", "Oui"])
+        sla_comm = st.text_area("Commentaires SLA", "")
+
+    desc_modif = st.text_input("Description des changements", value="Création initiale du flux")
+
+    col_sub1, col_sub2 = st.columns(2)
+    with col_sub1:
+        submitted_draft = st.button("💾 Enregistrer en Brouillon", use_container_width=True)
+    with col_sub2:
+        submitted_final = st.button("🚀 Soumettre le DCI", type="primary", use_container_width=True)
+
+    if submitted_draft or submitted_final:
+        if not code_flux or not desc_fonc:
+            st.error("Veuillez remplir les champs obligatoires (Code flux et Description).")
+        else:
+            statut_cible = "SUBMITTED" if submitted_final else "DRAFT"
+            new_dci = {
+                "id": f"DCI-{len(st.session_state.dcis)+1:03d}",
+                "code_flux": code_flux,
+                "description": desc_fonc,
+                "partenaire": partenaire_source,
+                "protocole": protocole,
+                "format": format_flux,
+                "encodage": encodage,
+                "commentaires": commentaires,
+                "kafka_params": kafka_params,
+                "sftp_params": sftp_params,
+                "oms": oms_list,
+                "sla": {
+                    "criticite": criticite, "impact": impact,
+                    "sla_metier": sla_metier, "canal": canal_incident,
+                    "penalite": penalite, "commentaires": sla_comm
+                },
+                "version": 1.0,
+                "statut": statut_cible,
+                "date_soumission": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "auteur": selected_user,
+                "desc_modif": desc_modif,
+                "env_deployes": []
+            }
+            st.session_state.dcis.append(new_dci)
+            log_action(selected_user, statut_cible, f"DCI {code_flux} enregistré ({statut_cible})")
+            st.success("DCI enregistré avec succès !")
+            st.session_state.current_page = "home"
+            st.rerun()
 
 
 # ------------------------------------------
