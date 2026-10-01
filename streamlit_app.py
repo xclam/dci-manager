@@ -223,7 +223,6 @@ if st.session_state.current_page == "home":
                         st.caption(f"Protocole : `{d['protocole']}` | Statut : **{d['statut']}**")
                     with c3:
                         if d["statut"] == "DEPLOYED":
-                            # Vérifier si l'utilisateur connecté a déjà une demande en cours ou acceptée pour ce flux
                             existing_req = next(
                                 (da for da in st.session_state.demandes_acces 
                                  if da["flux"] == d["code_flux"] and da["demandeur"] == selected_user and da["statut"] in ["EN ATTENTE", "VALIDE"]),
@@ -248,7 +247,6 @@ if st.session_state.current_page == "home":
                         else:
                             st.caption("Non déployé")
                     with c4:
-                        # Bouton d'évolution pour le Partenaire propriétaire (Partenaire A ou autre propriétaire) ou Admin
                         is_owner = (current_role == "Partenaire" and selected_user == d["partenaire"]) or (current_role == "Administrateur")
                         if is_owner and d["statut"] == "DEPLOYED":
                             if st.button("📈 Évoluer", key=f"evol_btn_{d['id']}", use_container_width=True, help="Faire évoluer ce flux"):
@@ -368,11 +366,22 @@ elif st.session_state.current_page == "create_dci":
             default_om_name = existing_flux["oms"][i]["nom"] if (existing_flux and existing_flux.get("oms") and len(existing_flux["oms"]) > i) else ""
             oc1, oc2, oc3 = st.columns(3)
             with oc1:
-                # Forcer le nom de l'OM en majuscules automatiquement
-                raw_om_nom = st.text_input(f"Nom de l'OM #{i+1} *", value=default_om_name, key=f"create_om_nom_{i}")
-                om_nom = raw_om_nom.upper()
-                if raw_om_nom != om_nom:
-                    st.toast(f"Le nom de l'OM a été converti en majuscules : {om_nom}")
+                # Callback ou transformation directe pour que le champ s'affiche en majuscule visuellement dans Streamlit
+                om_key = f"create_om_nom_{i}"
+                if om_key not in st.session_state and default_om_name:
+                    st.session_state[om_key] = default_om_name
+                
+                # Fonction de callback pour forcer la majuscule dans le widget state
+                def upper_case_callback(k=om_key):
+                    if st.session_state.get(k):
+                        st.session_state[k] = st.session_state[k].upper()
+
+                om_nom = st.text_input(f"Nom de l'OM #{i+1} *", key=om_key, on_change=upper_case_callback)
+                # Assurer la mise en majuscule immédiate également si l'état contient déjà des minuscules
+                if om_nom and om_nom != om_nom.upper():
+                    om_nom = om_nom.upper()
+                    st.session_state[om_key] = om_nom
+
                 om_freq = st.selectbox(f"Fréquence #{i+1} *", ["Quotidien", "Hebdomadaire", "Mensuel", "Événementiel"], key=f"create_om_freq_{i}")
             with oc2:
                 default_vmoy = existing_flux["oms"][i]["vol_moy"] if (existing_flux and existing_flux.get("oms") and len(existing_flux["oms"]) > i) else 10.0
@@ -397,11 +406,10 @@ elif st.session_state.current_page == "create_dci":
                 "jdd_present": jdd_file is not None
             })
 
-    st.subheader("4. SLA (Service Level Agreement)")
+    st.subheader("4. Service Level Agreement (SLA)")
     s1, s2 = st.columns(2)
     with s1:
         criticite = st.selectbox("Criticité *", ["Faible", "Moyen", "Critique"])
-        # Si criticité faible, l'impact n'est pas obligatoire
         impact_label = "Impact métier si flux KO" if criticite == "Faible" else "Impact métier si flux KO *"
         default_impact = existing_flux["sla"].get("impact", "") if (existing_flux and existing_flux.get("sla")) else ""
         impact = st.text_area(impact_label, value=default_impact)
@@ -422,32 +430,33 @@ elif st.session_state.current_page == "create_dci":
     if submitted_draft or submitted_final:
         code_flux_val_final = existing_flux["code_flux"] if existing_flux else code_flux
         
-        # Validation conditionnelle de l'impact selon la criticité
         if not code_flux_val_final or not desc_fonc:
             st.error("Veuillez remplir les champs obligatoires (Code flux et Description).")
         elif criticite != "Faible" and not impact.strip():
             st.error("L'impact métier si flux KO est obligatoire pour une criticité Moyenne ou Critique.")
         else:
-            # Règle : Une modification est une évolution que si on touche aux paramètres sftp/kafka ou objets métiers
-            # Comparaison avec l'existant si modification
+            # Détection automatique de modification sur sftp, kafka ou om
             is_real_evolution = True
             if existing_flux:
-                old_proto = existing_flux.get("protocole")
                 old_sftp = existing_flux.get("sftp_params", {})
                 old_kafka = existing_flux.get("kafka_params", {})
                 old_oms = existing_flux.get("oms", [])
+                old_proto = existing_flux.get("protocole")
                 
-                # Si le protocole, les paramètres sftp/kafka ou les objets métiers n'ont pas changé, ce n'est pas une évolution technique majeure (incrément de version optionnel ou conservé)
                 if protocole == old_proto and sftp_params == old_sftp and kafka_params == old_kafka and oms_list == old_oms:
                     is_real_evolution = False
 
-            statut_cible = "SUBMITTED" if submitted_final else "DRAFT"
+            # Si l'admin modifie directement, les modifications s'enregistrent tout de suite sans passer par SUBMITTED
+            if current_role == "Administrateur" and existing_flux:
+                statut_cible = existing_flux["statut"] # Conserve le statut (ex: DEPLOYED)
+            else:
+                statut_cible = "SUBMITTED" if submitted_final else "DRAFT"
             
             if existing_flux:
                 if is_real_evolution:
                     new_version = round(existing_flux["version"] + 1.0, 1)
                 else:
-                    new_version = existing_flux["version"]  # Pas d'évolution des paramètres profonds, on garde la version ou simple mise à jour de description
+                    new_version = existing_flux["version"]  # Pas de montée de version
             else:
                 new_version = 1.0
 
@@ -477,13 +486,12 @@ elif st.session_state.current_page == "create_dci":
             }
             
             if existing_flux:
-                # Remplacer l'ancien ou ajouter selon la logique d'historique
                 st.session_state.dcis = [new_dci if d["id"] == existing_flux["id"] else d for d in st.session_state.dcis]
             else:
                 st.session_state.dcis.append(new_dci)
 
             log_action(selected_user, statut_cible, f"DCI {code_flux_val_final} (v{new_version}) enregistré ({statut_cible})")
-            st.success("DCI enregistré avec succès !" + (" (Évolution détectée)" if is_real_evolution and existing_flux else ""))
+            st.success("DCI enregistré avec succès !")
             st.session_state.selected_flux_id = None
             st.session_state.current_page = "home"
             st.rerun()
@@ -526,7 +534,6 @@ elif st.session_state.current_page == "detail_dci":
         if dci.get('commentaires'):
             st.write(f"**Commentaires libres :** {dci['commentaires']}")
 
-        # Bouton d'évolution pour le partenaire propriétaire (Partenaire A ou autre si Partenaire / SI = Partenaire A)
         is_owner = (current_role == "Partenaire" and selected_user == dci["partenaire"])
         if is_owner and dci["statut"] == "DEPLOYED":
             if st.button("📈 Demander une évolution de ce flux", type="primary", use_container_width=True):
@@ -588,17 +595,10 @@ elif st.session_state.current_page == "detail_dci":
             if s.get('commentaires'):
                 st.caption(f"Commentaires SLA : {s.get('commentaires')}")
 
-        # Actions Administrateur (Avec choix explicite d'évolution si l'admin modifie ou valide)
+        # Actions Administrateur
         if current_role == "Administrateur":
             st.markdown("---")
             st.subheader("🛡 Actions Administrateur")
-            
-            # Option pour l'admin de préciser s'il s'agit d'une évolution ou version actuelle lors de la modification/validation
-            type_modif_admin = st.radio(
-                "Nature de la modification/validation pour ce flux :",
-                ["Conserver la version actuelle (simple mise à jour / correction mineure)", "Considérer comme une ÉVOLUTION (incrément de version v+1)"],
-                index=0
-            )
             
             motif_rejet = st.text_input("Motif de rejet (si refus)", key="det_motif")
 
@@ -607,9 +607,7 @@ elif st.session_state.current_page == "detail_dci":
                 if dci["statut"] == "SUBMITTED" and st.button("✅ Approuver le DCI"):
                     dci["statut"] = "APPROVED"
                     dci["env_deployes"] = ["DEV", "REC", "PPD", "PRD"]
-                    if "ÉVOLUTION" in type_modif_admin:
-                        dci["version"] = round(dci["version"] + 1.0, 1)
-                    log_action(selected_user, "APPROVED", f"DCI {dci['code_flux']} approuvé (Évolution : {'Oui' in type_modif_admin}).")
+                    log_action(selected_user, "APPROVED", f"DCI {dci['code_flux']} approuvé administrativement.")
                     st.success("DCI approuvé !")
                     st.rerun()
             with c_rj:
@@ -623,20 +621,18 @@ elif st.session_state.current_page == "detail_dci":
                         st.rerun()
             with c_mo:
                 if st.button("✏️ Modifier ce flux (Admin)"):
-                    if "ÉVOLUTION" in type_modif_admin:
-                        dci["version"] = round(dci["version"] + 1.0, 1)
                     st.session_state.selected_flux_id = dci["id"]
                     st.session_state.current_page = "create_dci"
                     st.rerun()
 
-        # Actions Développeur
-        if current_role == "Développeur" and dci["statut"] == "APPROVED":
+        # Actions Développeur / Admin : Un flux validé (APPROVED) sans montée de version ou validé globalement est considéré comme DEPLOYED
+        if (current_role in ["Développeur", "Administrateur"]) and dci["statut"] == "APPROVED":
             st.markdown("---")
-            st.subheader("💻 Espace Développeur (GitLab)")
-            if st.button("🔀 Simuler le Merge de la MR (Déployer)"):
+            st.subheader("💻 Espace Développeur / Déploiement")
+            if st.button("🔀 Valider / Marquer comme DEPLOYED"):
                 dci["statut"] = "DEPLOYED"
-                log_action(selected_user, "MERGE_MR", f"MR mergée pour {dci['code_flux']}.")
-                st.success("Merge validé ! Flux actif.")
+                log_action(selected_user, "DEPLOYED", f"Flux {dci['code_flux']} considéré comme déployé.")
+                st.success("Flux marqué comme déployé (DEPLOYED).")
                 st.rerun()
 
         # Demande d'accès pour Consommateurs / Partenaires
