@@ -60,7 +60,7 @@ KAFKA_FIELDS = {
     "om_kafka": "Nom de l'OM",
 }
 SFTP_REQUIRED = {"code_choree": "Code chorée sFTP", "prefixe": "Préfixe", "suffixe": "Suffixe"}
-OM_KEYS = ("nom", "vol_moy", "vol_max", "frequence", "horaires", "header_present", "absence_header_champ", "colonnes_header")  # JDD exclu du versioning
+OM_KEYS = ("nom", "vol_moy", "vol_max", "frequence", "horaires", "header_present", "colonnes_header")  # JDD et absence_header_champ exclus du versioning
 FLUX_CODE_RE = re.compile(r"^[A-Z0-9_]+$")
 
 
@@ -91,7 +91,7 @@ SEED_DCI = {
     "oms": [
         {"nom": "LIEN_MANAGER", "vol_moy": 15.0, "vol_max": 50.0,
          "frequence": "Quotidien", "horaires": "02:00", "jdd_nom": None,
-         "header_present": True, "absence_header_champ": "", "colonnes_header": "ID_MGR;ID_COLLAB;DATE_DEBUT"}
+         "header_present": True, "colonnes_header": "ID_MGR;ID_COLLAB;DATE_DEBUT"}
     ],
     "sla": {
         "criticite": "Critique",
@@ -220,7 +220,8 @@ def flatten(d: dict) -> dict:
             "Description": d.get("description")}
     for section, label in (("sftp_params", "sFTP"), ("kafka_params", "Kafka"), ("sla", "SLA")):
         for key, value in (d.get(section) or {}).items():
-            flat[f"{label} › {key}"] = value
+            if key != "schema_content":  # Ne pas aplatir le contenu binaire/texte brut du schéma dans le diff standard
+                flat[f"{label} › {key}"] = value
     for i, om in enumerate(d.get("oms") or [], 1):
         for key in OM_KEYS:
             flat[f"OM #{i} › {key}"] = om.get(key)
@@ -274,9 +275,11 @@ def validate(p: dict, *, final: bool, is_new: bool) -> list[str]:
         errors.append("Le partenaire est obligatoire.")
 
     if p["protocole"] == "Kafka":
-        for key, label in {**KAFKA_FIELDS, "schema": "Schéma de message"}.items():
+        for key, label in KAFKA_FIELDS.items():
             if not p["kafka_params"].get(key, "").strip():
                 errors.append(f"Kafka : « {label} » est obligatoire.")
+        if not p["kafka_params"].get("schema", "").strip():
+            errors.append("Kafka : Le fichier de schéma de message (pièce jointe) est obligatoire.")
     else:
         sftp = p["sftp_params"]
         for key, label in SFTP_REQUIRED.items():
@@ -292,8 +295,6 @@ def validate(p: dict, *, final: bool, is_new: bool) -> list[str]:
         for om in p["oms"]:
             if om["vol_moy"] > om["vol_max"]:
                 errors.append(f"OM {om['nom'] or '?'} : volumétrie moyenne > volumétrie max.")
-            if not om.get("header_present", True) and not om.get("absence_header_champ", "").strip():
-                errors.append(f"OM {om['nom'] or '?'}: Le champ précisant la définition/structure du fichier sans header est obligatoire.")
 
     sla = p["sla"]
     if not sla["sla_metier"].strip() or not sla["canal"].strip():
@@ -519,7 +520,24 @@ def page_form() -> None:
         cols = st.columns(2)
         for i, (key, label) in enumerate(KAFKA_FIELDS.items()):
             kafka_params[key] = cols[i % 2].text_input(f"{label} *", value=kafka0.get(key, ""), key=f"f_k_{key}")
-        kafka_params["schema"] = st.text_area("Schéma de message *", value=kafka0.get("schema", ""), key="f_k_schema")
+        
+        # Schéma de message sous forme de pièce jointe (fichier)
+        schema_file = st.file_uploader(
+            "Schéma de message (pièce jointe) *",
+            type=["json", "proto", "avsc", "xml", "txt"],
+            key="f_k_schema_file",
+            help="Chargez le fichier contenant le schéma (JSON, Protobuf, Avro, etc.)"
+        )
+        if schema_file:
+            kafka_params["schema"] = schema_file.name
+            kafka_params["schema_content"] = schema_file.getvalue().decode("utf-8", errors="ignore")
+        else:
+            kafka_params["schema"] = kafka0.get("schema", "")
+            kafka_params["schema_content"] = kafka0.get("schema_content", "")
+        
+        if kafka_params["schema"]:
+            st.caption(f"📎 Schéma rattaché : `{kafka_params['schema']}`")
+
     else:
         st.subheader("2. Paramètres sFTP & Chorégraphie")
         sc1, sc2 = st.columns(2)
@@ -542,7 +560,7 @@ def page_form() -> None:
             enc = ["aucun", "GPG", "PGP"]
             sftp_params["chiffrement"] = st.selectbox("Chiffrement", enc, key="f_s_enc", index=pick(enc, sftp0.get("chiffrement")))
 
-        # --- 3. Objets métiers (sFTP uniquement avec gestion d'en-tête)
+        # --- 3. Objets métiers (sFTP uniquement avec gestion d'en-tête et liste des colonnes)
         st.subheader("3. Objets Métiers (OM) & Définition CSV")
         n_om = int(st.number_input("Nombre d'Objets Métiers", min_value=1, max_value=5,
                                    value=max(1, len(old_oms)), key="f_n_om"))
@@ -569,34 +587,37 @@ def page_form() -> None:
                 horaires = st.text_input(f"Horaires #{i + 1}", value=old.get("horaires", "02:00"), key=f"f_om_hor_{i}")
                 jdd = st.file_uploader(f"JDD (CSV) pour {nom or 'OM'}", type=["csv"], key=f"f_om_jdd_{i}")
 
-            # Règle Métier 1 & 2 : En-tête présent ou champ dédié si absent + colonnes
+            # Option En-tête + Liste des colonnes (le champ d'absence d'en-tête est supprimé)
             h_col1, h_col2 = st.columns(2)
             with h_col1:
-                header_present = st.selectbox(f"En-tête présent dans le fichier OM #{i + 1} ?", [True, False],
-                                              format_func=lambda x: "Oui" if x else "Non",
-                                              index=0 if old.get("header_present", True) else 1,
-                                              key=f"f_om_hp_{i}")
-            
-            absence_header_champ = ""
-            if not header_present:
-                with h_col2:
-                    absence_header_champ = st.text_input(f"Champ de définition des colonnes (absence d'en-tête) #{i + 1} *",
-                                                           value=old.get("absence_header_champ", ""),
-                                                           key=f"f_om_ahc_{i}",
-                                                           placeholder="Ex: Ordre strict des champs ou mapping")
-            
-            colonnes_header = st.text_input(f"Liste des colonnes (séparées par le séparateur ou ';') #{i + 1}",
-                                            value=old.get("colonnes_header", ""),
-                                            key=f"f_om_cols_{i}",
-                                            placeholder="COL1;COL2;COL3")
+                header_present = st.selectbox(
+                    f"En-tête présent dans le fichier OM #{i + 1} ?",
+                    [True, False],
+                    format_func=lambda x: "Oui" if x else "Non",
+                    index=0 if old.get("header_present", True) else 1,
+                    key=f"f_om_hp_{i}"
+                )
+            with h_col2:
+                colonnes_header = st.text_input(
+                    f"Liste des colonnes (séparées par le séparateur ou ';') #{i + 1}",
+                    value=old.get("colonnes_header", ""),
+                    key=f"f_om_cols_{i}",
+                    placeholder="COL1;COL2;COL3"
+                )
 
             if nom and sftp_params["prefixe"] and sftp_params["suffixe"]:
                 st.caption(f"📌 Fichier attendu : `{sftp_params['prefixe']}{nom}{sftp_params['suffixe']}`")
             
-            oms.append({"nom": nom, "vol_moy": vol_moy, "vol_max": vol_max, "frequence": freq,
-                        "horaires": horaires, "jdd_nom": jdd.name if jdd else old.get("jdd_nom"),
-                        "header_present": header_present, "absence_header_champ": absence_header_champ,
-                        "colonnes_header": colonnes_header})
+            oms.append({
+                "nom": nom,
+                "vol_moy": vol_moy,
+                "vol_max": vol_max,
+                "frequence": freq,
+                "horaires": horaires,
+                "jdd_nom": jdd.name if jdd else old.get("jdd_nom"),
+                "header_present": header_present,
+                "colonnes_header": colonnes_header
+            })
 
     # --- 4. SLA
     st.subheader("4. Service Level Agreement (SLA)")
@@ -695,7 +716,7 @@ def page_detail() -> None:
 
     # Paramètres
     if d["protocole"] == "sFTP" and d.get("sftp_params"):
-        st.subheader("⚙️ Paramètres sFTP & Chorégraphie")
+        st.subheader("⚙️️ Paramètres sFTP & Chorégraphie")
         p = d["sftp_params"]
         c1, c2 = st.columns(2)
         with c1:
@@ -718,8 +739,10 @@ def page_detail() -> None:
         with c2:
             kv("Topic PPD", kp.get("topic_ppd"), code=True)
             kv("Topic PRD", kp.get("topic_prd"), code=True)
-        st.write("**Schéma de message :**")
-        st.code(kp.get("schema") or "Non renseigné")
+            kv("Schéma de message (pièce jointe)", kp.get("schema"), code=True)
+        if kp.get("schema_content"):
+            with st.expander("📄 Afficher le contenu du schéma de message"):
+                st.code(kp.get("schema_content"))
 
     if d.get("oms"):
         st.subheader("📦 Objets Métiers (OM)")
@@ -732,7 +755,6 @@ def page_detail() -> None:
                 "Vol. max (Mo)": om.get("vol_max"),
                 "Horaires": om.get("horaires"),
                 "En-tête présent": "Oui" if om.get("header_present", True) else "Non",
-                "Champ sans en-tête": om.get("absence_header_champ") or "—",
                 "Colonnes / Champs": om.get("colonnes_header") or "—",
                 "JDD": om.get("jdd_nom") or "—"
             })
@@ -752,7 +774,7 @@ def page_detail() -> None:
         if s.get("commentaires"):
             st.caption(f"Commentaires SLA : {s['commentaires']}")
 
-    # --- Règle Dev 3 & 4 : Vue spécifique Développeur pour le Suivi d'Évolution (Colonnes sFTP & Schémas Kafka)
+    # --- Vue spécifique Développeur pour le Suivi d'Évolution (Colonnes sFTP & Schémas Kafka)
     parent = get_dci(d.get("parent_id"))
     if role in (DEV, ADMIN) and parent:
         st.divider()
@@ -786,25 +808,26 @@ def page_detail() -> None:
                     st.info(f"Nouvel OM détecté : `{om_name}`")
         
         elif d["protocole"] == "Kafka":
-            st.markdown("##### 🧬 Évolution du Schéma Kafka")
-            old_schema = parent.get("kafka_params", {}).get("schema", "")
-            new_schema = d.get("kafka_params", {}).get("schema", "")
-            schema_diff = compare_kafka_schemas(new_schema, old_schema)
-            col_ka, col_kb = st.columns(2)
-            with col_ka:
-                st.write("**Lignes / Propriétés ajoutées :**")
-                if schema_diff["added"]:
-                    for l in schema_diff["added"]:
-                        st.markdown(f"- :green[`+{l}`]")
-                else:
-                    st.caption("Aucun ajout dans le schéma.")
-            with col_kb:
-                st.write("**Lignes / Propriétés supprimées :**")
-                if schema_diff["removed"]:
-                    for l in schema_diff["removed"]:
-                        st.markdown(f"- :red[`-{l}`]")
-                else:
-                    st.caption("Aucune suppression dans le schéma.")
+            # Le bloc Évolution du Schéma Kafka doit pouvoir s'ouvrir/se fermer (expander)
+            with st.expander("🧬 Évolution du Schéma Kafka", expanded=True):
+                old_schema = parent.get("kafka_params", {}).get("schema_content", "")
+                new_schema = d.get("kafka_params", {}).get("schema_content", "")
+                schema_diff = compare_kafka_schemas(new_schema, old_schema)
+                col_ka, col_kb = st.columns(2)
+                with col_ka:
+                    st.write("**Lignes / Propriétés ajoutées :**")
+                    if schema_diff["added"]:
+                        for l in schema_diff["added"]:
+                            st.markdown(f"- :green[`+{l}`]")
+                    else:
+                        st.caption("Aucun ajout dans le schéma.")
+                with col_kb:
+                    st.write("**Lignes / Propriétés supprimées :**")
+                    if schema_diff["removed"]:
+                        for l in schema_diff["removed"]:
+                            st.markdown(f"- :red[`-{l}`]")
+                    else:
+                        st.caption("Aucune suppression dans le schéma.")
 
     # Historique des versions
     history = sorted((x for x in ss.dcis if x["code_flux"] == d["code_flux"]), key=lambda x: x["id"])
