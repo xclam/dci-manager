@@ -184,7 +184,7 @@ if st.session_state.current_page == "home":
                     with col_i:
                         st.write(f"**{dci['code_flux']}** ({dci['protocole']}) - Soumis par {dci['partenaire']}")
                     with col_a:
-                        if st.button("Traiter", key=f"manage_top_{dci['id']}"):
+                        if st.button("Traiter", key=f"manage_top_{dci['id']}_home"):
                             st.session_state.selected_flux_id = dci["id"]
                             st.session_state.current_page = "detail_dci"
                             st.rerun()
@@ -222,7 +222,8 @@ if st.session_state.current_page == "home":
                         st.write(d["description"])
                         st.caption(f"Protocole : `{d['protocole']}` | Statut : **{d['statut']}**")
                     with c3:
-                        if d["statut"] == "DEPLOYED":
+                        # Le développeur n'a pas besoin d'avoir le bouton demande d'accès
+                        if d["statut"] == "DEPLOYED" and current_role != "Développeur":
                             existing_req = next(
                                 (da for da in st.session_state.demandes_acces 
                                  if da["flux"] == d["code_flux"] and da["demandeur"] == selected_user and da["statut"] in ["EN ATTENTE", "VALIDE"]),
@@ -230,11 +231,11 @@ if st.session_state.current_page == "home":
                             )
                             if existing_req:
                                 if existing_req["statut"] == "EN ATTENTE":
-                                    st.button("⏳ Demande en cours", key=f"acc_dis_{d['id']}", disabled=True, use_container_width=True, help="Votre demande est prise en compte")
+                                    st.button("⏳ En cours", key=f"acc_dis_{d['id']}", disabled=True, use_container_width=True)
                                 else:
-                                    st.button("✅ Accès accordé", key=f"acc_dis_{d['id']}", disabled=True, use_container_width=True, help="Accès déjà accepté")
+                                    st.button("✅ Accordé", key=f"acc_dis_{d['id']}", disabled=True, use_container_width=True)
                             else:
-                                if st.button("🔑 Accès", key=f"acc_btn_{d['id']}", use_container_width=True, help="Demander l'accès à ce flux"):
+                                if st.button("🔑 Accès", key=f"acc_btn_{d['id']}", use_container_width=True):
                                     st.session_state.demandes_acces.append({
                                         "flux": d["code_flux"],
                                         "demandeur": selected_user,
@@ -242,14 +243,14 @@ if st.session_state.current_page == "home":
                                         "statut": "EN ATTENTE"
                                     })
                                     log_action(selected_user, "DEMANDE_ACCES", f"Demande d'accès au flux {d['code_flux']}")
-                                    st.success(f"Demande prise en compte pour {d['code_flux']} !")
+                                    st.success("Demande prise en compte !")
                                     st.rerun()
                         else:
-                            st.caption("Non déployé")
+                            st.caption("-")
                     with c4:
                         is_owner = (current_role == "Partenaire" and selected_user == d["partenaire"]) or (current_role == "Administrateur")
                         if is_owner and d["statut"] == "DEPLOYED":
-                            if st.button("📈 Évoluer", key=f"evol_btn_{d['id']}", use_container_width=True, help="Faire évoluer ce flux"):
+                            if st.button("📈 Évoluer", key=f"evol_btn_{d['id']}", use_container_width=True):
                                 st.session_state.selected_flux_id = d["id"]
                                 st.session_state.current_page = "create_dci"
                                 st.rerun()
@@ -332,28 +333,28 @@ elif st.session_state.current_page == "create_dci":
         with c1:
             default_k_dev = existing_flux["kafka_params"].get("topic_dev", "") if (existing_flux and existing_flux.get("kafka_params")) else ""
             default_k_ppd = existing_flux["kafka_params"].get("topic_ppd", "") if (existing_flux and existing_flux.get("kafka_params")) else ""
-            kafka_params["topic_dev"] = st.text_input("Nom du topic - DEV *", value=default_k_dev, placeholder="dev.mon_topic")
-            kafka_params["topic_ppd"] = st.text_input("Nom du topic - PPD *", value=default_k_ppd, placeholder="ppd.mon_topic")
+            kafka_params["topic_dev"] = st.text_input("Nom du topic - DEV *", value=default_k_dev)
+            kafka_params["topic_ppd"] = st.text_input("Nom du topic - PPD *", value=default_k_ppd)
             kafka_params["cluster"] = st.text_input("Nom du cluster Kafka *", value=existing_flux["kafka_params"].get("cluster", "") if (existing_flux and existing_flux.get("kafka_params")) else "")
             kafka_params["om_kafka"] = st.text_input("Nom de l'OM *", value=existing_flux["kafka_params"].get("om_kafka", "") if (existing_flux and existing_flux.get("kafka_params")) else "")
         with c2:
             default_k_rec = existing_flux["kafka_params"].get("topic_rec", "") if (existing_flux and existing_flux.get("kafka_params")) else ""
             default_k_prd = existing_flux["kafka_params"].get("topic_prd", "") if (existing_flux and existing_flux.get("kafka_params")) else ""
-            kafka_params["topic_rec"] = st.text_input("Nom du topic - REC *", value=default_k_rec, placeholder="rec.mon_topic")
-            kafka_params["topic_prd"] = st.text_input("Nom du topic - PRD *", value=default_k_prd, placeholder="prd.mon_topic")
-            kafka_params["schema"] = st.text_area("Schéma de message (Avro / JSON / Protobuf) *", value=existing_flux["kafka_params"].get("schema", "") if (existing_flux and existing_flux.get("kafka_params")) else "")
+            kafka_params["topic_rec"] = st.text_input("Nom du topic - REC *", value=default_k_rec)
+            kafka_params["topic_prd"] = st.text_input("Nom du topic - PRD *", value=default_k_prd)
+            kafka_params["schema"] = st.text_area("Schéma de message *", value=existing_flux["kafka_params"].get("schema", "") if (existing_flux and existing_flux.get("kafka_params")) else "")
 
     elif protocole == "sFTP":
         st.subheader("2. Paramètres sFTP & Chorégraphie")
         sc1, sc2 = st.columns(2)
         with sc1:
-            sftp_params["code_choree"] = st.text_input("Code chorée sFTP *", value=existing_flux.get("sftp_params", {}).get("code_choree", "") if existing_flux else "", placeholder="CHOR_JOB")
+            sftp_params["code_choree"] = st.text_input("Code chorée sFTP *", value=existing_flux.get("sftp_params", {}).get("code_choree", "") if existing_flux else "")
             sftp_params["structure"] = st.selectbox("Structure d'envoi *", ["Fichiers CSV indépendants", "Archive ZIP contenant des CSV"])
             if sftp_params["structure"] == "Archive ZIP contenant des CSV":
                 sftp_params["nom_archive"] = st.text_input("Nom de l'archive ZIP *")
             sftp_params["separateur"] = st.selectbox("Séparateur CSV *", [";", ",", "|", "\\t"])
         with sc2:
-            sftp_params["prefixe"] = st.text_input("Préfixe du nom de fichier *", value=existing_flux.get("sftp_params", {}).get("prefixe", "") if existing_flux else "", placeholder="MYHR_")
+            sftp_params["prefixe"] = st.text_input("Préfixe du nom de fichier *", value=existing_flux.get("sftp_params", {}).get("prefixe", "") if existing_flux else "")
             sftp_params["suffixe"] = st.text_input("Suffixe / pattern timestamp *", value=existing_flux.get("sftp_params", {}).get("suffixe", "_YYYYMMDD.csv") if existing_flux else "_YYYYMMDD.csv")
             sftp_params["retour_chariot"] = st.selectbox("Gestion des retours chariot *", ["Unix (LF)", "Windows"])
             sftp_params["compression"] = st.selectbox("Compression", ["aucune", "gzip", "zip"])
@@ -366,18 +367,15 @@ elif st.session_state.current_page == "create_dci":
             default_om_name = existing_flux["oms"][i]["nom"] if (existing_flux and existing_flux.get("oms") and len(existing_flux["oms"]) > i) else ""
             oc1, oc2, oc3 = st.columns(3)
             with oc1:
-                # Callback ou transformation directe pour que le champ s'affiche en majuscule visuellement dans Streamlit
                 om_key = f"create_om_nom_{i}"
                 if om_key not in st.session_state and default_om_name:
                     st.session_state[om_key] = default_om_name
                 
-                # Fonction de callback pour forcer la majuscule dans le widget state
                 def upper_case_callback(k=om_key):
                     if st.session_state.get(k):
                         st.session_state[k] = st.session_state[k].upper()
 
-                om_nom = st.text_input(f"Nom de l'OM #{i+1} *", key=om_key, on_change=upper_case_callback)
-                # Assurer la mise en majuscule immédiate également si l'état contient déjà des minuscules
+                om_nom = st.text_input(f"Nom de l'OM #{i+1} * (Majuscule automatique)", key=om_key, on_change=upper_case_callback)
                 if om_nom and om_nom != om_nom.upper():
                     om_nom = om_nom.upper()
                     st.session_state[om_key] = om_nom
@@ -390,7 +388,7 @@ elif st.session_state.current_page == "create_dci":
                 om_vol_max = st.number_input(f"Volumétrie max (Mo) #{i+1}", value=float(default_vmax), key=f"create_om_vmax_{i}")
             with oc3:
                 default_hor = existing_flux["oms"][i]["horaires"] if (existing_flux and existing_flux.get("oms") and len(existing_flux["oms"]) > i) else "02:00"
-                om_horaires = st.text_input(f"Horaires #{i+1}", value=default_hor, placeholder="02:00", key=f"create_om_hor_{i}")
+                om_horaires = st.text_input(f"Horaires #{i+1}", value=default_hor, key=f"create_om_hor_{i}")
                 jdd_file = st.file_uploader(f"JDD (CSV) pour {om_nom or 'OM'}", type=["csv"], key=f"create_jdd_{i}")
 
             if om_nom and sftp_params.get("prefixe") and sftp_params.get("suffixe"):
@@ -435,7 +433,7 @@ elif st.session_state.current_page == "create_dci":
         elif criticite != "Faible" and not impact.strip():
             st.error("L'impact métier si flux KO est obligatoire pour une criticité Moyenne ou Critique.")
         else:
-            # Détection automatique de modification sur sftp, kafka ou om
+            # Règle automatique par défaut : Si modification sftp, kafka ou om -> considéré comme évolution
             is_real_evolution = True
             if existing_flux:
                 old_sftp = existing_flux.get("sftp_params", {})
@@ -448,15 +446,12 @@ elif st.session_state.current_page == "create_dci":
 
             # Si l'admin modifie directement, les modifications s'enregistrent tout de suite sans passer par SUBMITTED
             if current_role == "Administrateur" and existing_flux:
-                statut_cible = existing_flux["statut"] # Conserve le statut (ex: DEPLOYED)
+                statut_cible = existing_flux["statut"]
             else:
                 statut_cible = "SUBMITTED" if submitted_final else "DRAFT"
             
             if existing_flux:
-                if is_real_evolution:
-                    new_version = round(existing_flux["version"] + 1.0, 1)
-                else:
-                    new_version = existing_flux["version"]  # Pas de montée de version
+                new_version = round(existing_flux["version"] + 1.0, 1) if is_real_evolution else existing_flux["version"]
             else:
                 new_version = 1.0
 
@@ -595,19 +590,46 @@ elif st.session_state.current_page == "detail_dci":
             if s.get('commentaires'):
                 st.caption(f"Commentaires SLA : {s.get('commentaires')}")
 
-        # Actions Administrateur
+        # Visualisation des différences (Diff) si le DCI possède une modification / historique ou comparaison
+        if current_role == "Administrateur":
+            st.markdown("---")
+            st.subheader("🔍 Visualisation des différences & Paramétrage sensible")
+            
+            # Détection des modifications (paramètres sftp, kafka ou om)
+            # Pour l'exemple, affichage visuel structuré des blocs clés modifiés ou comparaison textuelle claire
+            st.info("💡 Aide Admin : Les modifications sur les paramètres sFTP/Kafka ou les Objets Métiers (OM) impactent directement l'intégration flux.")
+            
+            # Affichage côte à côte ou format JSON structuré diff
+            with st.expander("Voir le détail brut complet du DCI (JSON)", expanded=False):
+                st.json(dci)
+
+        # Actions Administrateur avec main sur l'évolution de version
         if current_role == "Administrateur":
             st.markdown("---")
             st.subheader("🛡 Actions Administrateur")
             
+            # Option demandée : garder la main pour dire s'il s'agit d'une évolution de version ou non lors de la validation
+            is_version_evolution_checked = st.checkbox(
+                "📈 Considéré comme une évolution de version (+1.0)", 
+                value=True, 
+                help="Si coché, la validation incrémentera la version du DCI. Si décoché, la version actuelle est conservée."
+            )
+
             motif_rejet = st.text_input("Motif de rejet (si refus)", key="det_motif")
 
             c_ap, c_rj, c_mo = st.columns(3)
             with c_ap:
                 if dci["statut"] == "SUBMITTED" and st.button("✅ Approuver le DCI"):
+                    if not is_version_evolution_checked:
+                        # Conserve la version actuelle
+                        pass
+                    else:
+                        # Incrémente la version si l'admin le souhaite explicitement
+                        dci["version"] = round(dci["version"] + 1.0, 1)
+
                     dci["statut"] = "APPROVED"
                     dci["env_deployes"] = ["DEV", "REC", "PPD", "PRD"]
-                    log_action(selected_user, "APPROVED", f"DCI {dci['code_flux']} approuvé administrativement.")
+                    log_action(selected_user, "APPROVED", f"DCI {dci['code_flux']} approuvé (Évolution version : {is_version_evolution_checked}).")
                     st.success("DCI approuvé !")
                     st.rerun()
             with c_rj:
@@ -635,7 +657,7 @@ elif st.session_state.current_page == "detail_dci":
                 st.success("Flux marqué comme déployé (DEPLOYED).")
                 st.rerun()
 
-        # Demande d'accès pour Consommateurs / Partenaires
+        # Demande d'accès pour Consommateurs / Partenaires uniquement (le Développeur n'y a pas accès)
         if current_role in ["Consommateur", "Partenaire"] and dci["statut"] == "DEPLOYED":
             st.markdown("---")
             existing_req = next(
